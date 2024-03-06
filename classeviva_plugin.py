@@ -1,66 +1,64 @@
 from cat.mad_hatter.decorators import tool, hook, plugin
 from pydantic import BaseModel, Field
 
-import asyncio
-import classeviva
 from datetime import datetime
+import sqlite3
 
 
 class MySettings(BaseModel):
-    id: str = Field(
-        default="",
-        title="ID",
-    )
-    password: str = Field(
-        default="",
-        title="Password",
+    db_path: str = Field(
+        default="/app/cat/database/circolari.db",
+        title="SQLite database path",
     )
 
 
 @plugin
 def settings_schema():
-    return MySettings.schema()
+    return MySettings.model_json_schema()
 
 
 @hook
 def agent_prompt_prefix(prefix, cat):
 
-    prefix = """Aiuti le persone a sintetizzare e riassumere gli argomenti delle circolari del registro classeviva.
-    Rispondi con elenchi puntati e in modo preciso, elencando in modo riassuntivo il contenuto delle circolari.
-    Prendi informazioni solo dalla sezione ## Tools output di # Context, se non ci sono dati forniti in questa sezione rispondi dicendo che le informazioni non sono state fornite."""
+    prefix = """Aiuti le persone a guardare gli argomenti delle circolari del registro classeviva.
+    Le tue risposte devono essere complete e devono contenere tutte le informazioni importanti contenute nelle circolari, scrivendo in elenco puntato un riassunto completo per ogni circolare.
+    Devi specificare il contenuto di ogni circolare, il suo numero indicato in (Circolare n.) e il suo nome, le tue risposte devono essere lunghe.
+    """
 
     return prefix
 
 
-async def readData(numberOfLines, id, psw):
+def read_db(number, path):
+    connection = sqlite3.connect(path)
+    db_cursor = connection.cursor()
 
-    user = classeviva.Utente(id, psw)
-
-    await user.accedi()
-
-    materiale_bacheca = await user.bacheca()
-    materiale_bacheca.sort(
-        key=lambda x: datetime.strptime(x.get("pubDT"), "%Y-%m-%dT%H:%M:%S%z"),
-        reverse=True,
+    db_cursor.execute(
+        """SELECT count(name) FROM sqlite_master WHERE type='table' AND name='circolari' """
     )
+    if db_cursor.fetchone()[0] == 0:
+        db_cursor.execute("CREATE TABLE circolari(name, date, hash, text)")
 
-    global returnString
-    global isReturned
+    db_text_col = db_cursor.execute(
+        f"SELECT text FROM circolari ORDER BY date DESC LIMIT {number}"
+    ).fetchall()
+    db_text = [value[0] for value in db_text_col]
 
-    number = 1
+    #db_number_col = db_cursor.execute(
+    #    f"SELECT text FROM circolari ORDER BY number DESC LIMIT {number}"
+    #).fetchall()
+    #db_number = [value[0] for value in db_number_col]
 
-    for element in materiale_bacheca[: int(numberOfLines)]:
-        bachecaElement = (
-            await user.bacheca_leggi(element.get("evtCode"), element.get("pubId"))
-        ).get("item")
-        title = bachecaElement.get("title")
-        text = bachecaElement.get("text")
+    connection.commit()
+    connection.close()
 
-        returnString += f"Circolare {number}:\nTitolo: {title}\nTesto: {text}"
+    returnString = ""
 
-        number = number + 1
+    for text in db_text:
+        returnString += "Circolare n. {}\n"
+        returnString += text
+        returnString += "\n"
 
-    isReturned = True
+    return returnString
 
 
 @tool
@@ -76,17 +74,9 @@ def numberToRead(number, cat):
     Input -> 5
     """
 
-    global returnString
-    global isReturned
-    returnString = ""
-    isReturned = False
-
     settings = cat.mad_hatter.get_plugin().load_settings()
-    id = settings["id"]
-    password = settings["password"]
+    path = settings["db_path"]
 
-    asyncio.run(readData(number, id, password))
-    while not(isReturned):
-        pass
+    db_text = read_db(number, path)
 
-    return returnString
+    return db_text
